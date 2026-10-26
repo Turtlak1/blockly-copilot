@@ -47,6 +47,7 @@
     modelOptions: document.getElementById('modelOptions'),
     temperatureInput: document.getElementById('temperatureInput'),
     maxTokensInput: document.getElementById('maxTokensInput'),
+    mcpServerEnabledInput: document.getElementById('mcpServerEnabledInput'),
     openPanelBtn: document.getElementById('openPanelBtn'),
     doneSettingsBtn: document.getElementById('doneSettingsBtn'),
     toast: document.getElementById('toast')
@@ -66,12 +67,14 @@
     defaultModel: DEFAULT_MODEL,
     temperature: 0.2,
     maxTokens: 2048,
+    mcpServerEnabled: false,
     availableModels: []
   };
   let workspaceState = { kind: 'checking', message: 'Checking page...' };
   let pendingRequests = new Map();
   let sending = false;
   let savingSettings = false;
+  let savingMcpSetting = false;
   let testingConnection = false;
   let statusRequestSequence = 0;
   let toastTimer = null;
@@ -1033,6 +1036,7 @@
     }
     elements.temperatureInput.value = appSettings.temperature ?? 0.2;
     elements.maxTokensInput.value = appSettings.maxTokens ?? 2048;
+    elements.mcpServerEnabledInput.checked = Boolean(appSettings.mcpServerEnabled);
 
     const model = appSettings.model || DEFAULT_MODEL;
     elements.modelLabel.textContent = model;
@@ -1176,7 +1180,8 @@
         ...(elements.googleApiKey.value.trim() ? { googleApiKey: elements.googleApiKey.value.trim() } : {}),
         ...(elements.openRouterApiKey.value.trim() ? { openRouterApiKey: elements.openRouterApiKey.value.trim() } : {}),
         temperature: Number(elements.temperatureInput.value),
-        maxTokens: Number(elements.maxTokensInput.value)
+        maxTokens: Number(elements.maxTokensInput.value),
+        mcpServerEnabled: elements.mcpServerEnabledInput.checked
       }, 20000);
       if (result && result.settings) {
         appSettings = { ...appSettings, ...result.settings };
@@ -1198,6 +1203,35 @@
       savingSettings = false;
       elements.saveSettingsBtn.disabled = false;
       elements.saveSettingsBtn.textContent = 'Save settings';
+    }
+  }
+
+  async function updateMcpServerSetting(enabled) {
+    if (savingMcpSetting) return;
+    savingMcpSetting = true;
+    elements.mcpServerEnabledInput.disabled = true;
+
+    try {
+      const result = await request('saveSettings', {
+        tabId: activeTabId,
+        mcpServerEnabled: enabled
+      }, 15000);
+      if (result && result.settings) {
+        appSettings = { ...appSettings, ...result.settings };
+      }
+      elements.mcpServerEnabledInput.checked = Boolean(appSettings.mcpServerEnabled);
+      showToast(
+        appSettings.mcpServerEnabled
+          ? 'MCP server bridge enabled.'
+          : 'MCP server bridge disabled.',
+        'success'
+      );
+    } catch (error) {
+      elements.mcpServerEnabledInput.checked = Boolean(appSettings.mcpServerEnabled);
+      showToast(error.message || 'Could not update the MCP server setting.', 'error');
+    } finally {
+      savingMcpSetting = false;
+      elements.mcpServerEnabledInput.disabled = false;
     }
   }
 
@@ -1368,6 +1402,9 @@
 
     elements.saveSettingsBtn.addEventListener('click', () => {
       void saveSettings();
+    });
+    elements.mcpServerEnabledInput.addEventListener('change', () => {
+      void updateMcpServerSetting(elements.mcpServerEnabledInput.checked);
     });
     elements.testBtn.addEventListener('click', () => {
       void testConnection();

@@ -2,7 +2,12 @@
 
 const PORT_NAME = 'groq-blockly-assistant';
 const MCP_BRIDGE_URL = 'http://127.0.0.1:8765';
+const MCP_SERVER_STORAGE_KEY = 'mcpServerEnabled';
+const MCP_POLL_INTERVAL_MS = 500;
 let mcpPollActive = false;
+let mcpPollTimer = null;
+let mcpPollGeneration = 0;
+let mcpPollAbortController = null;
 const API_KEY_STORAGE_KEY = 'groqApiKey';
 const GOOGLE_API_KEY_STORAGE_KEY = 'googleAiApiKey';
 const OPENROUTER_API_KEY_STORAGE_KEY = 'openRouterApiKey';
@@ -311,7 +316,8 @@ const settings = {
   openRouterApiKey: '',
   model: DEFAULT_MODEL,
   temperature: 0.2,
-  maxTokens: 2048
+  maxTokens: 2048,
+  mcpServerEnabled: false
 };
 
 const conversations = new Map();
@@ -410,7 +416,8 @@ function publicSettings() {
     model: settings.model,
     defaultModel: DEFAULT_MODEL,
     temperature: settings.temperature,
-    maxTokens: settings.maxTokens
+    maxTokens: settings.maxTokens,
+    mcpServerEnabled: Boolean(settings.mcpServerEnabled)
   };
 }
 
@@ -624,6 +631,7 @@ async function initialize() {
       OPENROUTER_MODEL_STORAGE_KEY,
       TEMPERATURE_STORAGE_KEY,
       MAX_TOKENS_STORAGE_KEY,
+      MCP_SERVER_STORAGE_KEY,
       RATE_LIMIT_STORAGE_KEY
     ]);
     if (typeof stored[API_KEY_STORAGE_KEY] === 'string') settings.groqApiKey = stored[API_KEY_STORAGE_KEY].trim();
@@ -643,6 +651,7 @@ async function initialize() {
     const maxTokens = normalizeMaxTokens(stored[MAX_TOKENS_STORAGE_KEY]);
     settings.temperature = temperature === null ? 0.2 : temperature;
     settings.maxTokens = maxTokens === null ? 2048 : maxTokens;
+    settings.mcpServerEnabled = stored[MCP_SERVER_STORAGE_KEY] === true;
     const defaults = {};
     if (stored[MODEL_STORAGE_KEY] === undefined) defaults[MODEL_STORAGE_KEY] = DEFAULT_MODEL;
     if (stored[GOOGLE_MODEL_STORAGE_KEY] === undefined || googleModel !== storedGoogleModel) {
@@ -653,6 +662,7 @@ async function initialize() {
     }
     if (stored[TEMPERATURE_STORAGE_KEY] === undefined) defaults[TEMPERATURE_STORAGE_KEY] = settings.temperature;
     if (stored[MAX_TOKENS_STORAGE_KEY] === undefined) defaults[MAX_TOKENS_STORAGE_KEY] = settings.maxTokens;
+    if (stored[MCP_SERVER_STORAGE_KEY] === undefined) defaults[MCP_SERVER_STORAGE_KEY] = false;
     if (Object.keys(defaults).length) await chrome.storage.local.set(defaults);
     const until = Number(stored[RATE_LIMIT_STORAGE_KEY]);
     const now = Date.now();
@@ -668,13 +678,42 @@ async function initialize() {
   startMcpBridgePolling();
 }
 
+function stopMcpBridgePolling() {
+  mcpPollGeneration += 1;
+  mcpPollActive = false;
+  if (mcpPollTimer) {
+    clearTimeout(mcpPollTimer);
+    mcpPollTimer = null;
+  }
+  if (mcpPollAbortController) {
+    try {
+      mcpPollAbortController.abort();
+    } catch {
+      // Ignore abort failures.
+    }
+    mcpPollAbortController = null;
+  }
+}
+
 function startMcpBridgePolling() {
+  if (!settings.mcpServerEnabled) {
+    stopMcpBridgePolling();
+    return;
+  }
   if (mcpPollActive) return;
   mcpPollActive = true;
+  const generation = ++mcpPollGeneration;
   const poll = async () => {
+    if (!mcpPollActive || generation !== mcpPollGeneration || !settings.mcpServerEnabled) return;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    mcpPollAbortController = controller;
     try {
-      const response = await fetch(`${MCP_BRIDGE_URL}/next`, { cache: 'no-store' });
+      const response = await fetch(`${MCP_BRIDGE_URL}/next`, {
+        cache: 'no-store',
+        ...(controller ? { signal: controller.signal } : {})
+      });
       if (response.ok) {
+        if (!mcpPollActive || generation !== mcpPollGeneration || !settings.mcpServerEnabled) return;
         const call = await response.json();
         if (call && call.id && typeof call.name === 'string') {
           let body;
@@ -699,7 +738,10 @@ function startMcpBridgePolling() {
     } catch {
       // The local MCP server is optional and may not be running.
     } finally {
-      setTimeout(poll, 500);
+      if (mcpPollAbortController === controller) mcpPollAbortController = null;
+      if (mcpPollActive && generation === mcpPollGeneration && settings.mcpServerEnabled) {
+        mcpPollTimer = setTimeout(poll, MCP_POLL_INTERVAL_MS);
+      }
     }
   };
   void poll();
@@ -779,6 +821,12 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (changes[MAX_TOKENS_STORAGE_KEY]) {
     settings.maxTokens = normalizeMaxTokens(changes[MAX_TOKENS_STORAGE_KEY].newValue) ?? 2048;
+    changed = true;
+  }
+  if (changes[MCP_SERVER_STORAGE_KEY]) {
+    settings.mcpServerEnabled = changes[MCP_SERVER_STORAGE_KEY].newValue === true;
+    if (settings.mcpServerEnabled) startMcpBridgePolling();
+    else stopMcpBridgePolling();
     changed = true;
   }
   if (changed) broadcastSettings();
@@ -953,6 +1001,7 @@ async function handleSaveSettings(message) {
   let nextModel = settings.model;
   let nextTemperature = settings.temperature;
   let nextMaxTokens = settings.maxTokens;
+  let nextMcpServerEnabled = settings.mcpServerEnabled;
 
   for (const [field, current] of [
     ['groqApiKey', nextGroqKey],
@@ -991,8 +1040,15 @@ async function handleSaveSettings(message) {
     throw new AppError('INVALID_MAX_TOKENS', 'Max output tokens must be an integer from 256 to 8192.');
   }
   if (maxTokens !== null) nextMaxTokens = maxTokens;
+  if (message.mcpServerEnabled !== undefined) {
+    if (typeof message.mcpServerEnabled !== 'boolean') {
+      throw new AppError('INVALID_MCP_SETTING', 'The MCP server setting must be true or false.');
+    }
+    nextMcpServerEnabled = message.mcpServerEnabled;
+  }
   changed = changed || modelChanged || nextProvider !== settings.provider
-    || nextTemperature !== settings.temperature || nextMaxTokens !== settings.maxTokens;
+    || nextTemperature !== settings.temperature || nextMaxTokens !== settings.maxTokens
+    || nextMcpServerEnabled !== settings.mcpServerEnabled;
   if (!changed) {
     return { settings: publicSettings(), changed: false };
   }
@@ -1008,6 +1064,7 @@ async function handleSaveSettings(message) {
   }
   if (nextTemperature !== settings.temperature) payload[TEMPERATURE_STORAGE_KEY] = nextTemperature;
   if (nextMaxTokens !== settings.maxTokens) payload[MAX_TOKENS_STORAGE_KEY] = nextMaxTokens;
+  if (nextMcpServerEnabled !== settings.mcpServerEnabled) payload[MCP_SERVER_STORAGE_KEY] = nextMcpServerEnabled;
 
   try {
     await chrome.storage.local.set(payload);
@@ -1022,6 +1079,9 @@ async function handleSaveSettings(message) {
   settings.model = nextModel;
   settings.temperature = nextTemperature;
   settings.maxTokens = nextMaxTokens;
+  settings.mcpServerEnabled = nextMcpServerEnabled;
+  if (settings.mcpServerEnabled) startMcpBridgePolling();
+  else stopMcpBridgePolling();
   broadcastSettings();
   return { settings: publicSettings(), changed: true };
 }

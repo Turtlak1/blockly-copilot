@@ -37,6 +37,10 @@ Manifest V3 Chrome Extension that injects an AI assistant into any page running 
   - `addBlockToWorkspace` and `clearWorkspace` require safe XML snapshot support (`Blockly.Xml.workspaceToDom`).
   - If a mutation fails mid-operation, the snapshot is automatically restored.
   - Users can undo the last AI modification via the popup/side-panel button.
+- **MCP Bridge**:
+  - `mcpServerEnabled` is stored in `chrome.storage.local` and defaults to `false`.
+  - The background polls `http://127.0.0.1:8765` only while the setting is on; disabling clears the timer and aborts the in-flight request.
+  - The setting is exposed in the extension Settings panel and saved immediately.
 - **Groq API Quirks**:
   - `llama-3.3-70b-versatile` was decommissioned on August 16, 2026. The default model is `openai/gpt-oss-120b` (user-configurable in Settings).
   - When returning tool call results to Groq, the role is `"tool"` with `"tool_call_id"` and JSON string `"content"`. Do not include a `"name"` field in tool response messages.

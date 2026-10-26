@@ -29,6 +29,11 @@ HTTP only between the bridge and the extension. The extension still performs
 all page access through its existing content-script and main-world security
 boundary; API keys are not exposed to MCP.
 
+The bridge is **off by default**. Enable **MCP server bridge** in the extension
+Settings; the change is saved immediately. While it is off, the extension makes
+no requests to the local bridge at `127.0.0.1:8765`. Turn it on only when you
+are running the bridge and want MCP clients to control the active Blockly tab.
+
 Start the bridge with Node:
 
 ```bash
