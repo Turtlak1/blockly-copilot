@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "blockly-copilot": {
+      "type": "local",
+      "command": [
+        "node",
+        "/home/turtlak/Projects/groq-blockly-extension/mcp-server.js"
+      ],
+      "enabled": true
+    }
+  }
+}

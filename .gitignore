@@ -1,0 +1,10 @@
+# Local API response cache
+openrouter.json
+
+# Dependencies and local tooling
+node_modules/
+.opencode/
+
+# Logs and OS metadata
+*.log
+.DS_Store
